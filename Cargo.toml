@@ -1,0 +1,11 @@
+[package]
+name = "dist-sys-challenge"
+description = "My solutions for the fly.io distributed systems challenge"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["Linda Siemons <linda@catbrained.dev>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
