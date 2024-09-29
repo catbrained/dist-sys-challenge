@@ -24,7 +24,7 @@ struct Node {
 }
 
 impl Node {
-    fn handle_msg(&mut self, msg: Message, output: &mut io::StdoutLock) {
+    fn handle_msg(&mut self, msg: Message, output: &mut impl Write) {
         // NOTE: I'm assuming that all messages we receive are actually intended for us
         // and thus we don't need to check the destination value matches our id.
         match msg.body.inner {
@@ -46,10 +46,7 @@ impl Node {
                         inner: InnerMessageBody::InitOk,
                     },
                 };
-                // TODO: the messages in the Maelstrom protocol are newline separated.
-                // We should implement our own `Writer` that wraps stdout and appends newlines for us.
-                serde_json::to_writer(&mut *output, &reply).unwrap();
-                output.write_all(b"\n").unwrap();
+                reply.send(&mut *output).unwrap();
                 self.msg_id += 1;
             }
             InnerMessageBody::Echo { echo } => {
@@ -62,10 +59,7 @@ impl Node {
                         inner: InnerMessageBody::EchoOk { echo },
                     },
                 };
-                // TODO: the messages in the Maelstrom protocol are newline separated.
-                // We should implement our own `Writer` that wraps stdout and appends newlines for us.
-                serde_json::to_writer(&mut *output, &reply).unwrap();
-                output.write_all(b"\n").unwrap();
+                reply.send(&mut *output).unwrap();
                 self.msg_id += 1;
             }
             _ => {

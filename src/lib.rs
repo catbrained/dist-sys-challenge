@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use serde::{Deserialize, Serialize};
 
 // TODO: maybe we should implement some convenience functions,
@@ -42,4 +44,12 @@ pub enum InnerMessageBody {
     EchoOk {
         echo: String,
     },
+}
+
+impl Message {
+    /// Serialize and send the message in a newline delimited way, as the Maelstrom protocol expects.
+    pub fn send(&self, output: &mut impl Write) -> std::io::Result<()> {
+        serde_json::to_writer(&mut *output, self)?;
+        output.write_all(b"\n")
+    }
 }
