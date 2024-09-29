@@ -6,6 +6,7 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
 ## Progress
 1. **Echo** challenge: solved ✅, solution in [echo.rs](src/bin/echo.rs).
 2. **Unique ID Generation** challenge: solved ✅, solution in [guid.rs](src/bin/guid.rs).
+3a. **Single-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
@@ -28,4 +29,8 @@ maelstrom test -w echo --bin target/debug/echo --node-count 1 --time-limit 10
 2. **Unique ID Generation** challenge
 ```shell
 maelstrom test -w unique-ids --bin target/debug/guid --time-limit 30 --rate 1000 --node-count 3 --availability total --nemesis partition
+```
+3a. **Single-Node Broadcast** challenge
+```shell
+maelstrom test -w broadcast --bin target/debug/broadcast --node-count 1 --time-limit 20 --rate 10
 ```
