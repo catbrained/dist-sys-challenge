@@ -6,14 +6,15 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
 ## Progress
 1. **Echo** challenge: solved ✅, solution in [echo.rs](src/bin/echo.rs).
 2. **Unique ID Generation** challenge: solved ✅, solution in [guid.rs](src/bin/guid.rs).
-3a. **Single-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
+3. Broadcast
+   1. **Single-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
 See the [Rust documentation](https://www.rust-lang.org/learn/get-started) to learn how to set up a Rust development environment.
 See the [Maelstrom documentation](https://github.com/jepsen-io/maelstrom/blob/8b9e94c75e59250b82d1730d923f9f8e088ee227/doc/01-getting-ready/index.md) to learn how to install Maelstrom.
 
-> [!NOTE]
+> [!TIP]
 > This repository contains a **Nix flake** with a **dev shell** that contains the Rust toolchain and Maelstrom!
 > If you have [Nix](https://nixos.org/) installed (with flakes enabled!) you can just run `nix develop` in this repository to enter the dev shell and start playing around.
 > There is also a `.envrc` file which enables you to automatically enter the dev shell when entering the repository directory if you have [direnv](https://direnv.net/) installed.
