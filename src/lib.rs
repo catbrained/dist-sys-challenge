@@ -44,6 +44,10 @@ pub enum InnerMessageBody {
     EchoOk {
         echo: String,
     },
+    Generate,
+    GenerateOk {
+        id: String,
+    },
 }
 
 impl Message {
