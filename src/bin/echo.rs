@@ -65,7 +65,7 @@ impl Node {
             _ => {
                 // NOTE: Let's assume that everyone is behaving nicely and we don't get
                 // any `InitOk`s or other messages that we don't expect. :)
-                unimplemented!()
+                unreachable!()
             }
         }
     }
