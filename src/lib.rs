@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{collections::HashMap, io::Write};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ pub struct MessageBody {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum InnerMessageBody {
+    // Common message types
     Init {
         node_id: String,
         node_ids: Vec<String>,
@@ -38,16 +39,31 @@ pub enum InnerMessageBody {
         code: u16,
         text: Option<String>,
     },
+    // 1. Echo challenge
     Echo {
         echo: String,
     },
     EchoOk {
         echo: String,
     },
+    // 2. Unique ID generation challenge
     Generate,
     GenerateOk {
         id: String,
     },
+    // 3. Broadcast challenge
+    Broadcast {
+        message: u64,
+    },
+    BroadcastOk,
+    Read,
+    ReadOk {
+        messages: Vec<u64>,
+    },
+    Topology {
+        topology: HashMap<String, Vec<String>>,
+    },
+    TopologyOk,
 }
 
 impl Message {
