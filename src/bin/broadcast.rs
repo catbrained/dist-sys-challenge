@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     io::{self, Write},
 };
 
@@ -13,7 +13,7 @@ fn main() {
         id: None,
         msg_id: 1,
         known: HashSet::new(),
-        topology: HashMap::new(),
+        neighbors: Vec::new(),
     };
     let messages = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
     for message in messages {
@@ -27,7 +27,7 @@ struct Node {
     id: Option<String>,
     msg_id: u64,
     known: HashSet<u64>,
-    topology: HashMap<String, Vec<String>>,
+    neighbors: Vec<String>,
 }
 
 impl Node {
@@ -71,7 +71,7 @@ impl Node {
                 self.msg_id += 1;
             }
             InnerMessageBody::Topology { topology } => {
-                self.topology = topology;
+                self.neighbors = topology.get(self.id.as_ref().unwrap()).unwrap().clone();
                 let reply = Message {
                     src: msg.dst,
                     dst: msg.src,
