@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use tokio::io;
+use tokio::time::{self, Duration, Instant, MissedTickBehavior};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
@@ -20,14 +21,31 @@ async fn main() -> Result<()> {
         msg_id: 1,
         known: HashSet::new(),
         neighbors: Vec::new(),
+        unacknowledged: Vec::new(),
     };
 
-    while let Some(line) = input.try_next().await? {
-        let message: Message = serde_json::from_str(&line)?;
-        node.handle_msg(message, &mut output).await?;
-    }
+    let start = Instant::now() + Duration::from_millis(500);
+    // NOTE: This interval seems to produce decent results, but it might be worth
+    // experimenting with different values.
+    let mut interval = time::interval_at(start, Duration::from_millis(500));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    Ok(())
+    loop {
+        tokio::select! {
+            Some(res) = input.next() => {
+                let Ok(ref line) = res else {
+                    return Err(anyhow!("Failed to read line from input"));
+                };
+                let message = serde_json::from_str(line)?;
+                node.handle_msg(message, &mut output).await?
+            }
+            _ = interval.tick() => {
+                for m in node.unacknowledged.iter() {
+                    m.send(&mut output).await.context("Failed to send gossip retry")?
+                }
+            }
+        };
+    }
 }
 
 struct Node {
@@ -35,6 +53,7 @@ struct Node {
     msg_id: u64,
     known: HashSet<u64>,
     neighbors: Vec<String>,
+    unacknowledged: Vec<Message>,
 }
 
 impl Node {
@@ -69,8 +88,6 @@ impl Node {
             }
             InnerMessageBody::Broadcast { message } => {
                 let already_seen = !self.known.insert(message);
-                // Is this a node-to-node message?
-                let node_to_node = msg.src.starts_with("n");
                 // Gossip to our neighbors, but only if we haven't seen this value before,
                 // to avoid infinite loops.
                 if !already_seen {
@@ -88,24 +105,22 @@ impl Node {
                                 inner: InnerMessageBody::Broadcast { message },
                             },
                         };
-                        gossip.send(output).await?;
+                        self.unacknowledged.push(gossip);
+                        self.unacknowledged.last().unwrap().send(output).await?;
                         self.msg_id += 1;
                     }
                 }
-                // We don't acknowledge node-to-node gossip.
-                if !node_to_node {
-                    let reply = Message {
-                        src: msg.dst,
-                        dst: msg.src,
-                        body: MessageBody {
-                            id: Some(self.msg_id),
-                            in_reply_to: msg.body.id,
-                            inner: InnerMessageBody::BroadcastOk,
-                        },
-                    };
-                    reply.send(output).await?;
-                    self.msg_id += 1;
-                }
+                let reply = Message {
+                    src: msg.dst,
+                    dst: msg.src,
+                    body: MessageBody {
+                        id: Some(self.msg_id),
+                        in_reply_to: msg.body.id,
+                        inner: InnerMessageBody::BroadcastOk,
+                    },
+                };
+                reply.send(output).await?;
+                self.msg_id += 1;
             }
             InnerMessageBody::Topology { topology } => {
                 self.neighbors = topology.get(self.id.as_ref().unwrap()).unwrap().clone();
@@ -135,6 +150,14 @@ impl Node {
                 };
                 reply.send(output).await?;
                 self.msg_id += 1;
+            }
+            InnerMessageBody::BroadcastOk => {
+                for (i, m) in self.unacknowledged.iter().enumerate() {
+                    if m.body.id.unwrap() == msg.body.in_reply_to.unwrap() {
+                        self.unacknowledged.remove(i);
+                        break;
+                    }
+                }
             }
             _ => {
                 // NOTE: Let's assume that everyone is behaving nicely and we don't get
