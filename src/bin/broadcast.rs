@@ -21,13 +21,14 @@ async fn main() -> Result<()> {
         msg_id: 1,
         known: HashSet::new(),
         neighbors: Vec::new(),
+        nodes: Vec::new(),
         unacknowledged: Vec::new(),
     };
 
-    let start = Instant::now() + Duration::from_millis(500);
+    let start = Instant::now() + Duration::from_millis(1000);
     // NOTE: This interval seems to produce decent results, but it might be worth
     // experimenting with different values.
-    let mut interval = time::interval_at(start, Duration::from_millis(500));
+    let mut interval = time::interval_at(start, Duration::from_millis(1000));
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
@@ -53,6 +54,7 @@ struct Node {
     msg_id: u64,
     known: HashSet<u64>,
     neighbors: Vec<String>,
+    nodes: Vec<String>,
     unacknowledged: Vec<Message>,
 }
 
@@ -65,15 +67,18 @@ impl Node {
         // NOTE: I'm assuming that all messages we receive are actually intended for us
         // and thus we don't need to check the destination value matches our id.
         match msg.body.inner {
-            InnerMessageBody::Init { node_id, .. } => {
+            InnerMessageBody::Init {
+                node_id,
+                mut node_ids,
+            } => {
                 self.id = self
                     .id
                     .as_ref()
                     // TODO: should we respond with an error message instead of panicking?
                     .map(|_| panic!("Node id is already set, but we received an init message"))
                     .or(Some(node_id));
-                // TODO: the node IDs sent in the init message are ignored for now,
-                // since we're not using them for anything at the moment.
+                node_ids.sort();
+                self.nodes = node_ids;
                 let reply = Message {
                     src: msg.dst,
                     dst: msg.src,
@@ -122,8 +127,22 @@ impl Node {
                 reply.send(output).await?;
                 self.msg_id += 1;
             }
-            InnerMessageBody::Topology { topology } => {
-                self.neighbors = topology.get(self.id.as_ref().unwrap()).unwrap().clone();
+            InnerMessageBody::Topology { .. } => {
+                // We ignore the topology suggestion from Maelstrom and build our own.
+                // We build a tree with a maximum of 4 children per node.
+                let i = self.nodes.binary_search(self.id.as_ref().unwrap()).unwrap();
+                let mut children: &[String] = &[];
+                // Check that we are not a leaf node.
+                if 4 * i + 1 < self.nodes.len() {
+                    children = &self.nodes[4 * i + 1..(4 * i + 5).min(self.nodes.len())];
+                }
+                let mut parent: &[String] = &[];
+                if i != 0 {
+                    // We are not the root node, so get our parent.
+                    parent = &self.nodes[(i - 1) / 4..((i - 1) / 4 + 1)];
+                }
+                self.neighbors = [parent, children].concat();
+                debug_assert!(self.neighbors.len() <= 5);
                 let reply = Message {
                     src: msg.dst,
                     dst: msg.src,

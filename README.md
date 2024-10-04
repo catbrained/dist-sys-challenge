@@ -10,6 +10,7 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
    1. **Single-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    2. **Multi-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    3. **Fault Tolerant Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
+   4. **Efficient Broadcast, Part 1** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
@@ -44,4 +45,8 @@ maelstrom test -w broadcast --bin target/debug/broadcast --node-count 5 --time-l
 3c. **Fault Tolerant Broadcast** challenge
 ```shell
 maelstrom test -w broadcast --bin target/debug/broadcast --node-count 5 --time-limit 20 --rate 10 --nemesis partition
+```
+3d. **Efficient Broadcast, Part 1** challenge
+```shell
+maelstrom test -w broadcast --bin target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100
 ```
