@@ -1,21 +1,29 @@
-use std::io::{self, Write};
+use anyhow::Result;
+use tokio::io;
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use dist_sys_challenge::*;
 
-fn main() {
-    let stdin = io::stdin().lock();
-    let mut stdout = io::stdout().lock();
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let codec = LinesCodec::new();
+    let mut input = FramedRead::new(stdin, codec.clone());
+    let mut output = FramedWrite::new(stdout, codec);
 
     let mut node = Node {
         id: None,
         msg_id: 1,
     };
-    let messages = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
-    for message in messages {
-        // TODO: maybe we should replace a bunch of these `unwrap`s with proper error handling
-        let message = message.unwrap();
-        node.handle_msg(message, &mut stdout);
+
+    while let Some(line) = input.try_next().await? {
+        let message: Message = serde_json::from_str(&line)?;
+        node.handle_msg(message, &mut output).await?;
     }
+
+    Ok(())
 }
 
 struct Node {
@@ -24,7 +32,11 @@ struct Node {
 }
 
 impl Node {
-    fn handle_msg(&mut self, msg: Message, output: &mut impl Write) {
+    async fn handle_msg(
+        &mut self,
+        msg: Message,
+        output: &mut FramedWrite<io::Stdout, LinesCodec>,
+    ) -> Result<()> {
         // NOTE: I'm assuming that all messages we receive are actually intended for us
         // and thus we don't need to check the destination value matches our id.
         match msg.body.inner {
@@ -46,7 +58,7 @@ impl Node {
                         inner: InnerMessageBody::InitOk,
                     },
                 };
-                reply.send(&mut *output).unwrap();
+                reply.send(output).await?;
                 self.msg_id += 1;
             }
             InnerMessageBody::Echo { echo } => {
@@ -59,7 +71,7 @@ impl Node {
                         inner: InnerMessageBody::EchoOk { echo },
                     },
                 };
-                reply.send(&mut *output).unwrap();
+                reply.send(output).await?;
                 self.msg_id += 1;
             }
             _ => {
@@ -68,5 +80,7 @@ impl Node {
                 unreachable!()
             }
         }
+
+        Ok(())
     }
 }

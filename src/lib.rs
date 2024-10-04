@@ -1,6 +1,10 @@
-use std::{collections::HashMap, io::Write};
+use std::collections::HashMap;
 
+use anyhow::Result;
+use futures::SinkExt;
 use serde::{Deserialize, Serialize};
+use tokio::io;
+use tokio_util::codec::{FramedWrite, LinesCodec};
 
 // TODO: maybe we should implement some convenience functions,
 // like, e.g., `reply` to handle swapping src and dst etc.
@@ -68,8 +72,9 @@ pub enum InnerMessageBody {
 
 impl Message {
     /// Serialize and send the message in a newline delimited way, as the Maelstrom protocol expects.
-    pub fn send(&self, output: &mut impl Write) -> std::io::Result<()> {
-        serde_json::to_writer(&mut *output, self)?;
-        output.write_all(b"\n")
+    pub async fn send(&self, output: &mut FramedWrite<io::Stdout, LinesCodec>) -> Result<()> {
+        let msg = serde_json::to_string(self)?;
+        output.send(msg).await?;
+        Ok(())
     }
 }
