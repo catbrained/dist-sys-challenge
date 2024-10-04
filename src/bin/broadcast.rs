@@ -57,18 +57,44 @@ impl Node {
                 self.msg_id += 1;
             }
             InnerMessageBody::Broadcast { message } => {
-                self.known.insert(message);
-                let reply = Message {
-                    src: msg.dst,
-                    dst: msg.src,
-                    body: MessageBody {
-                        id: Some(self.msg_id),
-                        in_reply_to: msg.body.id,
-                        inner: InnerMessageBody::BroadcastOk,
-                    },
-                };
-                reply.send(&mut *output).unwrap();
-                self.msg_id += 1;
+                let already_seen = !self.known.insert(message);
+                // Is this a node-to-node message?
+                let node_to_node = msg.src.starts_with("n");
+                // Gossip to our neighbors, but only if we haven't seen this value before,
+                // to avoid infinite loops.
+                if !already_seen {
+                    for n in self.neighbors.iter() {
+                        // Don't send the message back to the node we received it from.
+                        if *n == msg.src {
+                            continue;
+                        }
+                        let gossip = Message {
+                            src: self.id.as_ref().unwrap().clone(),
+                            dst: n.clone(),
+                            body: MessageBody {
+                                id: Some(self.msg_id),
+                                in_reply_to: None,
+                                inner: InnerMessageBody::Broadcast { message },
+                            },
+                        };
+                        gossip.send(&mut *output).unwrap();
+                        self.msg_id += 1;
+                    }
+                }
+                // We don't acknowledge node-to-node gossip.
+                if !node_to_node {
+                    let reply = Message {
+                        src: msg.dst,
+                        dst: msg.src,
+                        body: MessageBody {
+                            id: Some(self.msg_id),
+                            in_reply_to: msg.body.id,
+                            inner: InnerMessageBody::BroadcastOk,
+                        },
+                    };
+                    reply.send(&mut *output).unwrap();
+                    self.msg_id += 1;
+                }
             }
             InnerMessageBody::Topology { topology } => {
                 self.neighbors = topology.get(self.id.as_ref().unwrap()).unwrap().clone();

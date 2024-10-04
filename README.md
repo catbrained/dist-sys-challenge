@@ -8,6 +8,7 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
 2. **Unique ID Generation** challenge: solved ✅, solution in [guid.rs](src/bin/guid.rs).
 3. Broadcast
    1. **Single-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
+   2. **Multi-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
@@ -34,4 +35,8 @@ maelstrom test -w unique-ids --bin target/debug/guid --time-limit 30 --rate 1000
 3a. **Single-Node Broadcast** challenge
 ```shell
 maelstrom test -w broadcast --bin target/debug/broadcast --node-count 1 --time-limit 20 --rate 10
+```
+3b. **Multi-Node Broadcast** challenge
+```shell
+maelstrom test -w broadcast --bin target/debug/broadcast --node-count 5 --time-limit 20 --rate 10
 ```
