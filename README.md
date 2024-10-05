@@ -52,6 +52,7 @@ maelstrom test -w broadcast --bin target/debug/broadcast --node-count 5 --time-l
 maelstrom test -w broadcast --bin target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100
 ```
 Target metrics: messages-per-op < 30, median latency < 400 ms, maximum latency < 600 ms
+
 3e. **Efficient Broadcast, Part 2** challenge
 ```shell
 maelstrom test -w broadcast --bin target/debug/broadcast-e --node-count 25 --time-limit 20 --rate 100 --latency 100
