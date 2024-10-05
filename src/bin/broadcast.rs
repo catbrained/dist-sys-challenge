@@ -129,20 +129,23 @@ impl Node {
             }
             InnerMessageBody::Topology { .. } => {
                 // We ignore the topology suggestion from Maelstrom and build our own.
-                // We build a tree with a maximum of 4 children per node.
+                // We build a tree with a maximum of `fanout` children per node.
+                let fanout = 4;
                 let i = self.nodes.binary_search(self.id.as_ref().unwrap()).unwrap();
                 let mut children: &[String] = &[];
+                let child_idx = fanout * i + 1;
                 // Check that we are not a leaf node.
-                if 4 * i + 1 < self.nodes.len() {
-                    children = &self.nodes[4 * i + 1..(4 * i + 5).min(self.nodes.len())];
+                if child_idx < self.nodes.len() {
+                    children = &self.nodes[child_idx..(child_idx + fanout).min(self.nodes.len())];
                 }
                 let mut parent: &[String] = &[];
                 if i != 0 {
                     // We are not the root node, so get our parent.
-                    parent = &self.nodes[(i - 1) / 4..((i - 1) / 4 + 1)];
+                    let parent_idx = (i - 1) / fanout;
+                    parent = &self.nodes[parent_idx..(parent_idx + 1)];
                 }
                 self.neighbors = [parent, children].concat();
-                debug_assert!(self.neighbors.len() <= 5);
+                debug_assert!(self.neighbors.len() <= fanout + 1);
                 let reply = Message {
                     src: msg.dst,
                     dst: msg.src,
