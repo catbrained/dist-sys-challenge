@@ -11,6 +11,7 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
    2. **Multi-Node Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    3. **Fault Tolerant Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    4. **Efficient Broadcast, Part 1** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
+   5. **Efficient Broadcast, Part 2** challenge: solved ✅, solution in [broadcast-e.rs](src/bin/broadcast-e.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
@@ -51,3 +52,8 @@ maelstrom test -w broadcast --bin target/debug/broadcast --node-count 5 --time-l
 maelstrom test -w broadcast --bin target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100
 ```
 Target metrics: messages-per-op < 30, median latency < 400 ms, maximum latency < 600 ms
+3e. **Efficient Broadcast, Part 2** challenge
+```shell
+maelstrom test -w broadcast --bin target/debug/broadcast-e --node-count 25 --time-limit 20 --rate 100 --latency 100
+```
+Target metrics: messages-per-op: < 20, median latency < 1000 ms, maximum latency < 2000 ms

@@ -68,6 +68,10 @@ pub enum InnerMessageBody {
         topology: HashMap<String, Vec<String>>,
     },
     TopologyOk,
+    // 3e. Custom message for efficient broadcast
+    BatchBroadcast {
+        messages: Vec<u64>,
+    },
 }
 
 impl Message {
