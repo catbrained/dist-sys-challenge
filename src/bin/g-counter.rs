@@ -290,14 +290,13 @@ impl Node {
                     // but the error message contains the (hopefully) current value,
                     // so let's try to parse it from the message. :3
                     let parsed_value: u64 = error
-                        .match_indices(char::is_numeric)
-                        .take(1)
-                        .map(|n| {
-                            n.1.parse()
-                                .expect("Failed to parse number in error message")
-                        })
-                        .last()
-                        .expect("Failed to find number in error message");
+                        .trim_start_matches(|c| !char::is_numeric(c))
+                        .chars()
+                        .take_while(|c| char::is_numeric(*c))
+                        .collect::<String>()
+                        .parse()
+                        .context("in Error 22 match arm")
+                        .expect("Failed to parse number");
                     let (client_id, in_reply_to, delta) = self
                         .request_map
                         .remove(&msg.body.in_reply_to.unwrap())
