@@ -4,6 +4,12 @@ I'm diverging from the original challenge a bit by using Rust instead of Go.
 Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to learn more.
 
 ## Progress
+> [!WARNING]
+> A lot of the code is seriously janky. There is a lot of room for improvement in error handling,
+> ergonomics, performance, and so on. However, these solutions do pass the Maelstrom tests.
+> I might improve on the quality of the code at some point, but for now the focus is simply
+> on learning these distributed systems principles and solving the challenges.
+
 1. **Echo** challenge: solved ✅, solution in [echo.rs](src/bin/echo.rs).
 2. **Unique ID Generation** challenge: solved ✅, solution in [guid.rs](src/bin/guid.rs).
 3. Broadcast
