@@ -206,32 +206,48 @@ impl Node {
                 }
             }
             InnerMessageBody::Add { delta } => {
-                // To add to the counter we first need to get the current value
-                // and then issue a CAS.
-                // Contact the KV store to get the value of the counter
-                let kv_request = Message {
-                    src: self.id.as_ref().unwrap().to_string(),
-                    dst: SEQ_KV.to_owned(),
-                    body: MessageBody {
-                        id: Some(self.msg_id),
-                        in_reply_to: None,
-                        // TODO: Do we store one single counter in the KV, or do we
-                        // store one counter per node and later combine them?
-                        inner: InnerMessageBody::ReadKv {
-                            key: COUNTER.to_owned(),
+                // Apparently clients sometimes issue an Add request with a delta of 0,
+                // so let's check for that and skip contacting the KV store for those requests.
+                if delta == 0 {
+                    let reply = Message {
+                        src: self.id.as_ref().unwrap().to_string(),
+                        dst: msg.src,
+                        body: MessageBody {
+                            id: Some(self.msg_id),
+                            in_reply_to: msg.body.id,
+                            inner: InnerMessageBody::AddOk,
                         },
-                    },
-                };
-                // Once the KV store answers we want to issue a CAS and then
-                // once the KV store answers our CAS we want to reply to
-                // the client who asked us to add to the value, so we store a mapping
-                // from the ID of this message to the name of the client,
-                // their message ID we ought to respond to, and the delta to apply.
-                self.request_map
-                    .insert(self.msg_id, (msg.src, msg.body.id.unwrap(), Some(delta)));
-                self.unacknowledged.push(kv_request);
-                self.unacknowledged.last().unwrap().send(output).await?;
-                self.msg_id += 1;
+                    };
+                    reply.send(output).await?;
+                    self.msg_id += 1;
+                } else {
+                    // To add to the counter we first need to get the current value
+                    // and then issue a CAS.
+                    // Contact the KV store to get the value of the counter
+                    let kv_request = Message {
+                        src: self.id.as_ref().unwrap().to_string(),
+                        dst: SEQ_KV.to_owned(),
+                        body: MessageBody {
+                            id: Some(self.msg_id),
+                            in_reply_to: None,
+                            // TODO: Do we store one single counter in the KV, or do we
+                            // store one counter per node and later combine them?
+                            inner: InnerMessageBody::ReadKv {
+                                key: COUNTER.to_owned(),
+                            },
+                        },
+                    };
+                    // Once the KV store answers we want to issue a CAS and then
+                    // once the KV store answers our CAS we want to reply to
+                    // the client who asked us to add to the value, so we store a mapping
+                    // from the ID of this message to the name of the client,
+                    // their message ID we ought to respond to, and the delta to apply.
+                    self.request_map
+                        .insert(self.msg_id, (msg.src, msg.body.id.unwrap(), Some(delta)));
+                    self.unacknowledged.push(kv_request);
+                    self.unacknowledged.last().unwrap().send(output).await?;
+                    self.msg_id += 1;
+                }
             }
             InnerMessageBody::CasKvOk => {
                 let mut duplicate = true;
