@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Context, Result};
 use tokio::io;
 use tokio::time::{self, Duration, Instant, MissedTickBehavior};
@@ -18,6 +20,7 @@ async fn main() -> Result<()> {
         id: None,
         msg_id: 1,
         unacknowledged: Vec::new(),
+        logs: HashMap::new(),
     };
 
     let start = Instant::now() + Duration::from_millis(1000);
@@ -44,10 +47,18 @@ async fn main() -> Result<()> {
     }
 }
 
+#[derive(Debug, Default)]
+struct Log {
+    next_offset: u64,
+    committed: u64,
+    messages: Vec<(u64, u64)>,
+}
+
 struct Node {
     id: Option<String>,
     msg_id: u64,
     unacknowledged: Vec<Message>,
+    logs: HashMap<String, Log>,
 }
 
 impl Node {
@@ -78,17 +89,85 @@ impl Node {
                 reply.send(output).await?;
                 self.msg_id += 1;
             }
-            InnerMessageBody::Send { key, msg } => {
-                todo!()
+            InnerMessageBody::Send { key, msg: m } => {
+                let l = self.logs.entry(key).or_default();
+                l.messages.push((l.next_offset, m));
+                let offset = l.next_offset;
+                l.next_offset += 1;
+                let reply = Message {
+                    src: self.id.as_ref().unwrap().clone(),
+                    dst: msg.src,
+                    body: MessageBody {
+                        id: Some(self.msg_id),
+                        in_reply_to: msg.body.id,
+                        inner: InnerMessageBody::SendOk { offset },
+                    },
+                };
+                reply.send(output).await?;
+                self.msg_id += 1;
             }
             InnerMessageBody::Poll { offsets } => {
-                todo!()
+                let mut msgs = HashMap::new();
+                for (k, o) in offsets {
+                    // Clients sometimes poll for logs that we don't know about.
+                    if let Some(log) = self.logs.get(&k) {
+                        let messages: Vec<(u64, u64)> = log
+                            .messages
+                            .iter()
+                            .skip_while(|(offset, _)| *offset < o)
+                            // We're limiting the number of messages to return per poll. The value is arbitrary.
+                            .take(20)
+                            .cloned()
+                            .collect();
+                        msgs.insert(k, messages);
+                    }
+                }
+                let reply = Message {
+                    src: self.id.as_ref().unwrap().clone(),
+                    dst: msg.src,
+                    body: MessageBody {
+                        id: Some(self.msg_id),
+                        in_reply_to: msg.body.id,
+                        inner: InnerMessageBody::PollOk { msgs },
+                    },
+                };
+                reply.send(output).await?;
+                self.msg_id += 1;
             }
             InnerMessageBody::CommitOffsets { offsets } => {
-                todo!()
+                for (k, o) in offsets {
+                    self.logs.entry(k).and_modify(|l| l.committed = o);
+                }
+                let reply = Message {
+                    src: self.id.as_ref().unwrap().clone(),
+                    dst: msg.src,
+                    body: MessageBody {
+                        id: Some(self.msg_id),
+                        in_reply_to: msg.body.id,
+                        inner: InnerMessageBody::CommitOffsetsOk,
+                    },
+                };
+                reply.send(output).await?;
+                self.msg_id += 1;
             }
             InnerMessageBody::ListCommittedOffsets { keys } => {
-                todo!()
+                let mut offsets = HashMap::new();
+                for k in keys {
+                    if let Some(log) = self.logs.get(&k) {
+                        offsets.insert(k, log.committed);
+                    }
+                }
+                let reply = Message {
+                    src: self.id.as_ref().unwrap().clone(),
+                    dst: msg.src,
+                    body: MessageBody {
+                        id: Some(self.msg_id),
+                        in_reply_to: msg.body.id,
+                        inner: InnerMessageBody::ListCommittedOffsetsOk { offsets },
+                    },
+                };
+                reply.send(output).await?;
+                self.msg_id += 1;
             }
             InnerMessageBody::Error { code, text } => {
                 panic!("Encountered error message with code {code} and message {text:?}");

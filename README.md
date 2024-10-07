@@ -19,6 +19,8 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
    4. **Efficient Broadcast, Part 1** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    5. **Efficient Broadcast, Part 2** challenge: solved ✅, solution in [broadcast-e.rs](src/bin/broadcast-e.rs).
 4. **Grow-Only Counter** challenge: solved ✅, solution in [g-counter.rs](src/bin/g-counter.rs).
+5. Kafka-Style Log
+   1. **Single-Node Kafka-Style Log** challenge: solved ✅, solution in [kafka.rs](src/bin/kafka.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
@@ -69,4 +71,8 @@ Target metrics: messages-per-op: < 20, median latency < 1000 ms, maximum latency
 4. **Grow-Only Counter** challenge
 ```shell
 maelstrom test -w g-counter --bin target/debug/g-counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+```
+5a. **Single-Node Kafka-Style Log** challenge
+```shell
+maelstrom test -w kafka --bin target/debug/kafka --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
 ```
