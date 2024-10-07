@@ -12,6 +12,7 @@ Visit the [challenge page on fly.io](https://fly.io/dist-sys/) if you want to le
    3. **Fault Tolerant Broadcast** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    4. **Efficient Broadcast, Part 1** challenge: solved ✅, solution in [broadcast.rs](src/bin/broadcast.rs).
    5. **Efficient Broadcast, Part 2** challenge: solved ✅, solution in [broadcast-e.rs](src/bin/broadcast-e.rs).
+4. **Grow-Only Counter** challenge: solved ✅, solution in [g-counter.rs](src/bin/g-counter.rs).
 
 ## Building and running the solutions
 You will need to be able to compile Rust and run the Maelstrom tool to test the resulting binaries.
@@ -58,3 +59,8 @@ Target metrics: messages-per-op < 30, median latency < 400 ms, maximum latency <
 maelstrom test -w broadcast --bin target/debug/broadcast-e --node-count 25 --time-limit 20 --rate 100 --latency 100
 ```
 Target metrics: messages-per-op: < 20, median latency < 1000 ms, maximum latency < 2000 ms
+
+4. **Grow-Only Counter** challenge
+```shell
+maelstrom test -w g-counter --bin target/debug/g-counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+```
