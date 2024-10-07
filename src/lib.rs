@@ -25,6 +25,14 @@ pub struct MessageBody {
     pub inner: InnerMessageBody,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum ReadOkVariants {
+    Array { messages: Vec<u64> },
+    Single { value: u64 },
+    Kv { value: String },
+}
+
 /// The part of the message that is specific to each
 /// type of message.
 #[derive(Serialize, Deserialize, Debug)]
@@ -60,10 +68,9 @@ pub enum InnerMessageBody {
         message: u64,
     },
     BroadcastOk,
+    // This message type is also reused in challenge 4
     Read,
-    ReadOk {
-        messages: Vec<u64>,
-    },
+    ReadOk(ReadOkVariants),
     Topology {
         topology: HashMap<String, Vec<String>>,
     },
@@ -72,6 +79,36 @@ pub enum InnerMessageBody {
     BatchBroadcast {
         messages: Vec<u64>,
     },
+    // 4. Grow-Only Counter challenge
+    Add {
+        delta: u64,
+    },
+    AddOk,
+    /// A read from the KV store
+    #[serde(rename = "read")]
+    ReadKv {
+        key: String,
+    },
+    /// A write to the KV store
+    #[serde(rename = "write")]
+    WriteKv {
+        key: String,
+        value: String,
+    },
+    /// A response to a Write request to the KV store
+    #[serde(rename = "write_ok")]
+    WriteKvOk,
+    /// A CAS operation on the KV store
+    #[serde(rename = "cas")]
+    CasKv {
+        key: String,
+        from: String,
+        to: String,
+        create_if_not_exists: bool,
+    },
+    /// A response to a CAS operation on the KV store
+    #[serde(rename = "cas_ok")]
+    CasKvOk,
 }
 
 impl Message {

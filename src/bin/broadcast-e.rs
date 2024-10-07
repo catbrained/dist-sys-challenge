@@ -209,9 +209,9 @@ impl Node {
                     body: MessageBody {
                         id: Some(self.msg_id),
                         in_reply_to: msg.body.id,
-                        inner: InnerMessageBody::ReadOk {
+                        inner: InnerMessageBody::ReadOk(ReadOkVariants::Array {
                             messages: self.known.clone().into_iter().collect(),
-                        },
+                        }),
                     },
                 };
                 reply.send(output).await?;
