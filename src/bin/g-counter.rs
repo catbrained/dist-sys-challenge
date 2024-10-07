@@ -105,8 +105,14 @@ impl Node {
                 self.msg_id += 1;
             }
             InnerMessageBody::Read => {
-                // Contact the KV store to get the value of the counter
-                let kv_request = Message {
+                // Reads from the sequentially consistent KV store might return stale values.
+                // We can prevent this by first issuing a unique write, which prevents the KV
+                // store from reordering our read in undesireable ways.
+                // (Although, as far as I understand it, the store _could_ still reorder the read
+                // without violating sequential consistency, but proving that this reordering is
+                // legal would be prohibitively expensive so it doesn't try to reorder. In any case,
+                // the Maelstrom provided seq-kv service seems to behave in this way so we make use of that.)
+                let write_req = Message {
                     src: self.id.as_ref().unwrap().to_string(),
                     dst: SEQ_KV.to_owned(),
                     body: MessageBody {
@@ -114,19 +120,17 @@ impl Node {
                         in_reply_to: None,
                         // TODO: Do we store one single counter in the KV, or do we
                         // store one counter per node and later combine them?
-                        inner: InnerMessageBody::ReadKv {
-                            key: COUNTER.to_owned(),
+                        inner: InnerMessageBody::WriteKv {
+                            key: self.id.as_ref().unwrap().to_string(),
+                            value: self.msg_id.to_string(),
                         },
                     },
                 };
-                // Once the KV store answers we want to route the answer back to
-                // the client who asked us for the value, so we store a mapping
-                // from the ID of this message to the name of the client and
-                // their message ID we ought to respond to
-                // (and set no delta because this is not an Add request).
+                // Store the information we need to be able to later route the value
+                // back to the client.
                 self.request_map
                     .insert(self.msg_id, (msg.src, msg.body.id.unwrap(), None));
-                self.unacknowledged.push(kv_request);
+                self.unacknowledged.push(write_req);
                 self.unacknowledged.last().unwrap().send(output).await?;
                 self.msg_id += 1;
             }
@@ -284,8 +288,48 @@ impl Node {
                 }
             }
             InnerMessageBody::WriteKvOk => {
-                // Do we need writes for anything?
-                todo!()
+                let mut duplicate = true;
+                // We received a response to our Write request, so mark it as acknowledged.
+                for (i, m) in self.unacknowledged.iter().enumerate() {
+                    if m.body.id.unwrap() == msg.body.in_reply_to.unwrap() {
+                        self.unacknowledged.remove(i);
+                        duplicate = false;
+                        break;
+                    }
+                }
+                if !duplicate {
+                    let (client_id, in_reply_to, _) = self
+                        .request_map
+                        .remove(&msg.body.in_reply_to.unwrap())
+                        .context("in WriteKvOk match arm")
+                        .expect("could not retrieve request mapping");
+                    // We only issue write requests to force the KV store to return fresh reads,
+                    // so the next step after a succesfull write is to issue the actual read.
+                    // Contact the KV store to get the value of the counter
+                    let kv_request = Message {
+                        src: self.id.as_ref().unwrap().to_string(),
+                        dst: SEQ_KV.to_owned(),
+                        body: MessageBody {
+                            id: Some(self.msg_id),
+                            in_reply_to: None,
+                            // TODO: Do we store one single counter in the KV, or do we
+                            // store one counter per node and later combine them?
+                            inner: InnerMessageBody::ReadKv {
+                                key: COUNTER.to_owned(),
+                            },
+                        },
+                    };
+                    // Once the KV store answers we want to route the answer back to
+                    // the client who asked us for the value, so we store a mapping
+                    // from the ID of this message to the name of the client and
+                    // their message ID we ought to respond to
+                    // (and set no delta because this is not an Add request).
+                    self.request_map
+                        .insert(self.msg_id, (client_id, in_reply_to, None));
+                    self.unacknowledged.push(kv_request);
+                    self.unacknowledged.last().unwrap().send(output).await?;
+                    self.msg_id += 1;
+                }
             }
             // Precondition failed, i.e., the CAS failed because the `from` value we tried was outdated.
             InnerMessageBody::Error {
