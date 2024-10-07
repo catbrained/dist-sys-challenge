@@ -109,6 +109,30 @@ pub enum InnerMessageBody {
     /// A response to a CAS operation on the KV store
     #[serde(rename = "cas_ok")]
     CasKvOk,
+    // 5. Kafka-Style Log challenge
+    Send {
+        key: String,
+        msg: u64,
+    },
+    SendOk {
+        offset: u64,
+    },
+    Poll {
+        offsets: HashMap<String, u64>,
+    },
+    PollOk {
+        msgs: HashMap<String, Vec<(u64, u64)>>,
+    },
+    CommitOffsets {
+        offsets: HashMap<String, u64>,
+    },
+    CommitOffsetsOk,
+    ListCommittedOffsets {
+        keys: Vec<String>,
+    },
+    ListCommittedOffsetsOk {
+        offsets: HashMap<String, u64>,
+    },
 }
 
 impl Message {
