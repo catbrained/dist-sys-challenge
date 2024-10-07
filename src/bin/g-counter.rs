@@ -118,8 +118,6 @@ impl Node {
                     body: MessageBody {
                         id: Some(self.msg_id),
                         in_reply_to: None,
-                        // TODO: Do we store one single counter in the KV, or do we
-                        // store one counter per node and later combine them?
                         inner: InnerMessageBody::WriteKv {
                             key: self.id.as_ref().unwrap().to_string(),
                             value: self.msg_id.to_string(),
@@ -152,8 +150,6 @@ impl Node {
                         .remove(&msg.body.in_reply_to.unwrap())
                         .context("in ReadKvOk match arm")
                         .expect("could not retrieve request mapping");
-                    // TODO: figure out how we want to store the counter on the KV,
-                    // and convert it appropriately.
                     let parsed_value = value
                         .parse()
                         .context("in ReadKvOk match arm")
@@ -169,15 +165,14 @@ impl Node {
                             body: MessageBody {
                                 id: Some(self.msg_id),
                                 in_reply_to: None,
-                                // TODO: Do we store one single counter in the KV, or do we
-                                // store one counter per node and later combine them?
                                 inner: InnerMessageBody::CasKv {
                                     key: COUNTER.to_owned(),
                                     from: value,
                                     to: new_value.to_string(),
                                     // Since we already read the value, the key should exist.
                                     // There are no delete operations on the KV store.
-                                    // Additionally it is sequentially consistent, which implies monotonic reads.
+                                    // Additionally it is sequentially consistent, which implies
+                                    // monotonic reads (as far as I understand it).
                                     create_if_not_exists: false,
                                 },
                             },
@@ -234,8 +229,6 @@ impl Node {
                         body: MessageBody {
                             id: Some(self.msg_id),
                             in_reply_to: None,
-                            // TODO: Do we store one single counter in the KV, or do we
-                            // store one counter per node and later combine them?
                             inner: InnerMessageBody::ReadKv {
                                 key: COUNTER.to_owned(),
                             },
@@ -312,8 +305,6 @@ impl Node {
                         body: MessageBody {
                             id: Some(self.msg_id),
                             in_reply_to: None,
-                            // TODO: Do we store one single counter in the KV, or do we
-                            // store one counter per node and later combine them?
                             inner: InnerMessageBody::ReadKv {
                                 key: COUNTER.to_owned(),
                             },
@@ -369,8 +360,6 @@ impl Node {
                         body: MessageBody {
                             id: Some(self.msg_id),
                             in_reply_to: None,
-                            // TODO: Do we store one single counter in the KV, or do we
-                            // store one counter per node and later combine them?
                             inner: InnerMessageBody::CasKv {
                                 key: COUNTER.to_owned(),
                                 from: parsed_value.to_string(),
