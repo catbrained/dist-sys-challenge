@@ -1,8 +1,12 @@
+use core::panic;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{anyhow, Context, Result};
-use tokio::io;
-use tokio::time::{self, Duration, Instant, MissedTickBehavior};
+use anyhow::{Context, Result};
+use tokio::sync::oneshot::Sender;
+use tokio::sync::Mutex;
+use tokio::{io, task};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
@@ -17,69 +21,63 @@ async fn main() -> Result<()> {
     let stdout = io::stdout();
     let codec = LinesCodec::new();
     let mut input = FramedRead::new(stdin, codec.clone());
-    let mut output = FramedWrite::new(stdout, codec);
+    let output = Rc::new(Mutex::new(FramedWrite::new(stdout, codec)));
 
-    let mut node = Node {
-        id: None,
-        msg_id: 1,
-        unacknowledged: Vec::new(),
-        request_map: HashMap::new(),
+    let node = Node {
+        id: Mutex::new(None),
+        msg_id: AtomicU64::new(1),
+        callbacks: Mutex::new(HashMap::new()),
     };
+    let node = Rc::new(node);
 
-    let start = Instant::now() + Duration::from_millis(1000);
-    // NOTE: This interval seems to produce decent results, but it might be worth
-    // experimenting with different values.
-    let mut interval = time::interval_at(start, Duration::from_millis(1000));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let local = tokio::task::LocalSet::new();
 
-    loop {
-        tokio::select! {
-            Some(res) = input.next() => {
-                let Ok(ref line) = res else {
-                    return Err(anyhow!("Failed to read line from input"));
-                };
-                let message = serde_json::from_str(line)?;
-                node.handle_msg(message, &mut output).await?
-            }
-            _ = interval.tick() => {
-                for m in node.unacknowledged.iter() {
-                    m.send(&mut output).await.context("Failed to send retry")?
+    let main_loop = async {
+        while let Some(line) = input.try_next().await? {
+            let message: Message = serde_json::from_str(&line)?;
+            if let Some(id) = message.body.in_reply_to {
+                if let Some(tx) = node.callbacks.lock().await.remove(&id) {
+                    let _ = tx.send(message);
                 }
+            } else {
+                task::spawn_local(handle_msg(node.clone(), message, output.clone()));
             }
-        };
-    }
+        }
+        Ok(())
+    };
+    local.run_until(main_loop).await
 }
 
 struct Node {
-    id: Option<String>,
-    msg_id: u64,
-    unacknowledged: Vec<Message>,
-    /// A map from message ID to (client ID, message ID, delta).
-    request_map: HashMap<u64, (String, u64, Option<u64>)>,
+    id: Mutex<Option<String>>,
+    msg_id: AtomicU64,
+    callbacks: Mutex<HashMap<u64, Sender<Message>>>,
 }
 
-impl Node {
-    async fn handle_msg(
-        &mut self,
-        msg: Message,
-        output: &mut FramedWrite<io::Stdout, LinesCodec>,
-    ) -> Result<()> {
-        // NOTE: I'm assuming that all messages we receive are actually intended for us
-        // and thus we don't need to check the destination value matches our id.
-        match msg.body.inner {
-            InnerMessageBody::Init { node_id, .. } => {
-                self.id = self
-                    .id
-                    .as_ref()
-                    // TODO: should we respond with an error message instead of panicking?
-                    .map(|_| panic!("Node id is already set, but we received an init message"))
-                    .or(Some(node_id));
+async fn handle_msg(
+    node: Rc<Node>,
+    msg: Message,
+    output: Rc<Mutex<FramedWrite<io::Stdout, LinesCodec>>>,
+) -> Result<()> {
+    // NOTE: I'm assuming that all messages we receive are actually intended for us
+    // and thus we don't need to check the destination value matches our id.
+    match msg.body.inner {
+        InnerMessageBody::Init { node_id, .. } => {
+            {
+                let mut id = node.id.lock().await;
+                if id.is_some() {
+                    panic!("Received Init message, but we already have a node ID");
+                } else {
+                    *id = Some(node_id);
+                }
+            }
+            {
                 // Let's initialize the counter in the KV store.
                 let init_kv = Message {
-                    src: self.id.as_ref().unwrap().to_string(),
+                    src: node.id.lock().await.as_ref().unwrap().to_string(),
                     dst: SEQ_KV.to_owned(),
                     body: MessageBody {
-                        id: Some(self.msg_id),
+                        id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
                         in_reply_to: None,
                         inner: InnerMessageBody::CasKv {
                             key: COUNTER.to_owned(),
@@ -89,310 +87,177 @@ impl Node {
                         },
                     },
                 };
-                self.unacknowledged.push(init_kv);
-                self.unacknowledged.last().unwrap().send(output).await?;
-                self.msg_id += 1;
+                init_kv
+                    .send_with_retry(&node.callbacks, output.clone())
+                    .await?;
+            }
+            let reply = Message {
+                src: msg.dst,
+                dst: msg.src,
+                body: MessageBody {
+                    id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
+                    in_reply_to: msg.body.id,
+                    inner: InnerMessageBody::InitOk,
+                },
+            };
+            reply.send(output).await?;
+        }
+        InnerMessageBody::Read => {
+            // Reads from the sequentially consistent KV store might return stale values.
+            // We can prevent this by first issuing a unique write, which prevents the KV
+            // store from reordering our read in undesireable ways.
+            // (Although, as far as I understand it, the store _could_ still reorder the read
+            // without violating sequential consistency, but proving that this reordering is
+            // legal would be prohibitively expensive so it doesn't try to reorder. In any case,
+            // the Maelstrom provided seq-kv service seems to behave in this way so we make use of that.)
+            let msg_id = node.msg_id.fetch_add(1, Ordering::SeqCst);
+            let node_id = node.id.lock().await.as_ref().unwrap().to_string();
+            let kv_request = Message {
+                src: node_id.clone(),
+                dst: SEQ_KV.to_owned(),
+                body: MessageBody {
+                    id: Some(msg_id),
+                    in_reply_to: None,
+                    inner: InnerMessageBody::WriteKv {
+                        key: node_id,
+                        value: msg_id.to_string(),
+                    },
+                },
+            };
+            let reply = kv_request
+                .send_with_retry(&node.callbacks, output.clone())
+                .await?
+                .await??;
+            debug_assert!(matches!(reply.body.inner, InnerMessageBody::WriteKvOk));
+            let read_request = Message {
+                src: node.id.lock().await.as_ref().unwrap().to_string(),
+                dst: SEQ_KV.to_owned(),
+                body: MessageBody {
+                    id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
+                    in_reply_to: None,
+                    inner: InnerMessageBody::ReadKv {
+                        key: COUNTER.to_owned(),
+                    },
+                },
+            };
+            let reply = read_request
+                .send_with_retry(&node.callbacks, output.clone())
+                .await?
+                .await??;
+            let InnerMessageBody::ReadOk(ReadOkVariants::Kv { value }) = reply.body.inner else {
+                panic!("Unexpected response type");
+            };
+            let value: u64 = value.parse().expect("Failed to parse counter value");
+            let reply = Message {
+                src: node.id.lock().await.as_ref().unwrap().to_string(),
+                dst: msg.src,
+                body: MessageBody {
+                    id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
+                    in_reply_to: msg.body.id,
+                    inner: InnerMessageBody::ReadOk(ReadOkVariants::Single { value }),
+                },
+            };
+            reply.send(output).await?;
+        }
+        InnerMessageBody::Add { delta } => {
+            // Apparently clients sometimes issue an Add request with a delta of 0,
+            // so let's check for that and skip contacting the KV store for those requests.
+            if delta == 0 {
                 let reply = Message {
-                    src: msg.dst,
+                    src: node.id.lock().await.as_ref().unwrap().to_string(),
                     dst: msg.src,
                     body: MessageBody {
-                        id: Some(self.msg_id),
+                        id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
                         in_reply_to: msg.body.id,
-                        inner: InnerMessageBody::InitOk,
+                        inner: InnerMessageBody::AddOk,
                     },
                 };
                 reply.send(output).await?;
-                self.msg_id += 1;
-            }
-            InnerMessageBody::Read => {
-                // Reads from the sequentially consistent KV store might return stale values.
-                // We can prevent this by first issuing a unique write, which prevents the KV
-                // store from reordering our read in undesireable ways.
-                // (Although, as far as I understand it, the store _could_ still reorder the read
-                // without violating sequential consistency, but proving that this reordering is
-                // legal would be prohibitively expensive so it doesn't try to reorder. In any case,
-                // the Maelstrom provided seq-kv service seems to behave in this way so we make use of that.)
-                let write_req = Message {
-                    src: self.id.as_ref().unwrap().to_string(),
+            } else {
+                // To add to the counter we first need to get the current value
+                // and then issue a CAS.
+                // Contact the KV store to get the value of the counter
+                let kv_request = Message {
+                    src: node.id.lock().await.as_ref().unwrap().to_string(),
                     dst: SEQ_KV.to_owned(),
                     body: MessageBody {
-                        id: Some(self.msg_id),
+                        id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
                         in_reply_to: None,
-                        inner: InnerMessageBody::WriteKv {
-                            key: self.id.as_ref().unwrap().to_string(),
-                            value: self.msg_id.to_string(),
+                        inner: InnerMessageBody::ReadKv {
+                            key: COUNTER.to_owned(),
                         },
                     },
                 };
-                // Store the information we need to be able to later route the value
-                // back to the client.
-                self.request_map
-                    .insert(self.msg_id, (msg.src, msg.body.id.unwrap(), None));
-                self.unacknowledged.push(write_req);
-                self.unacknowledged.last().unwrap().send(output).await?;
-                self.msg_id += 1;
-            }
-            InnerMessageBody::ReadOk(ReadOkVariants::Kv { value }) => {
-                let mut duplicate = true;
-                // We received a response to our Read request, so mark it as acknowledged.
-                for (i, m) in self.unacknowledged.iter().enumerate() {
-                    if m.body.id.unwrap() == msg.body.in_reply_to.unwrap() {
-                        self.unacknowledged.remove(i);
-                        duplicate = false;
-                        break;
-                    }
-                }
-                if !duplicate {
-                    // Look up if a client is waiting for our answer to their Read request,
-                    // and get their ID and the message ID we're replying to.
-                    let (client_id, in_reply_to, delta) = self
-                        .request_map
-                        .remove(&msg.body.in_reply_to.unwrap())
-                        .context("in ReadKvOk match arm")
-                        .expect("could not retrieve request mapping");
-                    let parsed_value = value
-                        .parse()
-                        .context("in ReadKvOk match arm")
-                        .expect("counter value should have been valid");
-                    if let Some(delta) = delta {
-                        // Looks like this KV Read request was not issued in response to a client Read request.
-                        // We're trying to serve an Add request from a client, and step 1 was to retrieve the
-                        // current counter value. Now we can issue a CAS to the KV store to increment the counter.
-                        let new_value: u64 = parsed_value + delta;
-                        let kv_request = Message {
-                            src: self.id.as_ref().unwrap().to_string(),
-                            dst: SEQ_KV.to_owned(),
-                            body: MessageBody {
-                                id: Some(self.msg_id),
-                                in_reply_to: None,
-                                inner: InnerMessageBody::CasKv {
-                                    key: COUNTER.to_owned(),
-                                    from: value,
-                                    to: new_value.to_string(),
-                                    // Since we already read the value, the key should exist.
-                                    // There are no delete operations on the KV store.
-                                    // Additionally it is sequentially consistent, which implies
-                                    // monotonic reads (as far as I understand it).
-                                    create_if_not_exists: false,
-                                },
-                            },
-                        };
-                        // Once the KV store answers our CAS we want to reply to
-                        // the client who asked us to add to the value, so we store a mapping
-                        // from the ID of this message to the name of the client,
-                        // their message ID we ought to respond to,
-                        // and the delta to apply (in case the CAS fails and we need to repeat this dance).
-                        self.request_map
-                            .insert(self.msg_id, (client_id, in_reply_to, Some(delta)));
-                        self.unacknowledged.push(kv_request);
-                        self.unacknowledged.last().unwrap().send(output).await?;
-                        self.msg_id += 1;
-                    } else {
-                        let reply = Message {
-                            src: self.id.as_ref().unwrap().to_string(),
-                            dst: client_id,
-                            body: MessageBody {
-                                id: Some(self.msg_id),
-                                in_reply_to: Some(in_reply_to),
-                                inner: InnerMessageBody::ReadOk(ReadOkVariants::Single {
-                                    value: parsed_value,
-                                }),
-                            },
-                        };
-                        reply.send(output).await?;
-                        self.msg_id += 1;
-                    }
-                }
-            }
-            InnerMessageBody::Add { delta } => {
-                // Apparently clients sometimes issue an Add request with a delta of 0,
-                // so let's check for that and skip contacting the KV store for those requests.
-                if delta == 0 {
-                    let reply = Message {
-                        src: self.id.as_ref().unwrap().to_string(),
-                        dst: msg.src,
-                        body: MessageBody {
-                            id: Some(self.msg_id),
-                            in_reply_to: msg.body.id,
-                            inner: InnerMessageBody::AddOk,
-                        },
-                    };
-                    reply.send(output).await?;
-                    self.msg_id += 1;
-                } else {
-                    // To add to the counter we first need to get the current value
-                    // and then issue a CAS.
-                    // Contact the KV store to get the value of the counter
-                    let kv_request = Message {
-                        src: self.id.as_ref().unwrap().to_string(),
+                let reply = kv_request
+                    .send_with_retry(&node.callbacks, output.clone())
+                    .await?
+                    .await??;
+                let InnerMessageBody::ReadOk(ReadOkVariants::Kv { mut value }) = reply.body.inner
+                else {
+                    panic!("Received unexpected response");
+                };
+                // We got the (hopefully) current value. Issue a CAS to update it.
+                loop {
+                    let parsed_value: u64 = value.parse().expect("Could not parse counter value");
+                    let cas = Message {
+                        src: node.id.lock().await.as_ref().unwrap().to_string(),
                         dst: SEQ_KV.to_owned(),
                         body: MessageBody {
-                            id: Some(self.msg_id),
-                            in_reply_to: None,
-                            inner: InnerMessageBody::ReadKv {
-                                key: COUNTER.to_owned(),
-                            },
-                        },
-                    };
-                    // Once the KV store answers we want to issue a CAS and then
-                    // once the KV store answers our CAS we want to reply to
-                    // the client who asked us to add to the value, so we store a mapping
-                    // from the ID of this message to the name of the client,
-                    // their message ID we ought to respond to, and the delta to apply.
-                    self.request_map
-                        .insert(self.msg_id, (msg.src, msg.body.id.unwrap(), Some(delta)));
-                    self.unacknowledged.push(kv_request);
-                    self.unacknowledged.last().unwrap().send(output).await?;
-                    self.msg_id += 1;
-                }
-            }
-            InnerMessageBody::CasKvOk => {
-                let mut duplicate = true;
-                // We received a response to our CAS request, so mark it as acknowledged.
-                for (i, m) in self.unacknowledged.iter().enumerate() {
-                    if m.body.id.unwrap() == msg.body.in_reply_to.unwrap() {
-                        self.unacknowledged.remove(i);
-                        duplicate = false;
-                        break;
-                    }
-                }
-                if !duplicate {
-                    // Check if this was a CAS request issued in response to a client
-                    // request or our initial request.
-                    // If client request:
-                    // Respond to the client that their Add request was succesful.
-                    // First we retrieve the ID of the client we need to respond to
-                    // as well as their request's message ID.
-                    if let Some((client_id, in_reply_to, _)) =
-                        self.request_map.remove(&msg.body.in_reply_to.unwrap())
-                    {
-                        let reply = Message {
-                            src: self.id.as_ref().unwrap().to_string(),
-                            dst: client_id,
-                            body: MessageBody {
-                                id: Some(self.msg_id),
-                                in_reply_to: Some(in_reply_to),
-                                inner: InnerMessageBody::AddOk,
-                            },
-                        };
-                        reply.send(output).await?;
-                        self.msg_id += 1;
-                    }
-                }
-            }
-            InnerMessageBody::WriteKvOk => {
-                let mut duplicate = true;
-                // We received a response to our Write request, so mark it as acknowledged.
-                for (i, m) in self.unacknowledged.iter().enumerate() {
-                    if m.body.id.unwrap() == msg.body.in_reply_to.unwrap() {
-                        self.unacknowledged.remove(i);
-                        duplicate = false;
-                        break;
-                    }
-                }
-                if !duplicate {
-                    let (client_id, in_reply_to, _) = self
-                        .request_map
-                        .remove(&msg.body.in_reply_to.unwrap())
-                        .context("in WriteKvOk match arm")
-                        .expect("could not retrieve request mapping");
-                    // We only issue write requests to force the KV store to return fresh reads,
-                    // so the next step after a succesfull write is to issue the actual read.
-                    // Contact the KV store to get the value of the counter
-                    let kv_request = Message {
-                        src: self.id.as_ref().unwrap().to_string(),
-                        dst: SEQ_KV.to_owned(),
-                        body: MessageBody {
-                            id: Some(self.msg_id),
-                            in_reply_to: None,
-                            inner: InnerMessageBody::ReadKv {
-                                key: COUNTER.to_owned(),
-                            },
-                        },
-                    };
-                    // Once the KV store answers we want to route the answer back to
-                    // the client who asked us for the value, so we store a mapping
-                    // from the ID of this message to the name of the client and
-                    // their message ID we ought to respond to
-                    // (and set no delta because this is not an Add request).
-                    self.request_map
-                        .insert(self.msg_id, (client_id, in_reply_to, None));
-                    self.unacknowledged.push(kv_request);
-                    self.unacknowledged.last().unwrap().send(output).await?;
-                    self.msg_id += 1;
-                }
-            }
-            // Precondition failed, i.e., the CAS failed because the `from` value we tried was outdated.
-            InnerMessageBody::Error {
-                code: 22,
-                text: Some(error),
-            } => {
-                let mut duplicate = true;
-                // We received an error response to our CAS request, so mark it as acknowledged.
-                for (i, m) in self.unacknowledged.iter().enumerate() {
-                    if m.body.id.unwrap() == msg.body.in_reply_to.unwrap() {
-                        self.unacknowledged.remove(i);
-                        duplicate = false;
-                        break;
-                    }
-                }
-                if !duplicate {
-                    // We _could_ send another Read request and _then_ try to issue a new CAS,
-                    // but the error message contains the (hopefully) current value,
-                    // so let's try to parse it from the message. :3
-                    let parsed_value: u64 = error
-                        .trim_start_matches(|c| !char::is_numeric(c))
-                        .chars()
-                        .take_while(|c| char::is_numeric(*c))
-                        .collect::<String>()
-                        .parse()
-                        .context("in Error 22 match arm")
-                        .expect("Failed to parse number");
-                    let (client_id, in_reply_to, delta) = self
-                        .request_map
-                        .remove(&msg.body.in_reply_to.unwrap())
-                        .context("in Error 22 match arm")
-                        .expect("could not retrieve request mapping");
-                    let new_value: u64 = parsed_value + delta.expect("delta should have been set");
-                    let kv_request = Message {
-                        src: self.id.as_ref().unwrap().to_string(),
-                        dst: SEQ_KV.to_owned(),
-                        body: MessageBody {
-                            id: Some(self.msg_id),
+                            id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
                             in_reply_to: None,
                             inner: InnerMessageBody::CasKv {
                                 key: COUNTER.to_owned(),
-                                from: parsed_value.to_string(),
-                                to: new_value.to_string(),
-                                // Since we already read the value, the key should exist.
-                                // There are no delete operations on the KV store.
-                                // Additionally it is sequentially consistent, which implies monotonic reads.
+                                from: value.clone(),
+                                to: (parsed_value + delta).to_string(),
                                 create_if_not_exists: false,
                             },
                         },
                     };
-                    // Once the KV store answers our CAS we want to reply to
-                    // the client who asked us to add to the value, so we store a mapping
-                    // from the ID of this message to the name of the client,
-                    // their message ID we ought to respond to,
-                    // and the delta to apply (in case the CAS fails and we need to repeat this dance).
-                    self.request_map
-                        .insert(self.msg_id, (client_id, in_reply_to, delta));
-                    self.unacknowledged.push(kv_request);
-                    self.unacknowledged.last().unwrap().send(output).await?;
-                    self.msg_id += 1;
+                    let reply = cas
+                        .send_with_retry(&node.callbacks, output.clone())
+                        .await?
+                        .await??;
+                    match reply.body.inner {
+                        InnerMessageBody::CasKvOk => {
+                            // Our CAS was successful. Return the response to the client.
+                            let reply = Message {
+                                src: node.id.lock().await.as_ref().unwrap().to_string(),
+                                dst: msg.src,
+                                body: MessageBody {
+                                    id: Some(node.msg_id.fetch_add(1, Ordering::SeqCst)),
+                                    in_reply_to: msg.body.id,
+                                    inner: InnerMessageBody::AddOk,
+                                },
+                            };
+                            return reply.send(output.clone()).await;
+                        }
+                        InnerMessageBody::Error {
+                            code: 22,
+                            text: Some(error),
+                        } => {
+                            // The CAS failed because the counter value was changed by someone.
+                            // The error message contains the (hopefully) current value. Parse it and try again.
+                            value = error
+                                .trim_start_matches(|c| !char::is_numeric(c))
+                                .chars()
+                                .take_while(|c| char::is_numeric(*c))
+                                .collect::<String>()
+                                .parse()
+                                .context("in Error 22 match arm")
+                                .expect("Failed to parse number");
+                        }
+                        _ => {
+                            panic!("Unexpected response type");
+                        }
+                    }
                 }
             }
-            InnerMessageBody::Error { code, text } => {
-                panic!("Encountered error message with code {code} and message {text:?}");
-            }
-            _ => {
-                // NOTE: Let's assume that everyone is behaving nicely and we don't get
-                // any `InitOk`s or other messages that we don't expect. :)
-                unreachable!("unexpected message type encountered")
-            }
         }
-
-        Ok(())
+        _ => {
+            // NOTE: Let's assume that everyone is behaving nicely and we don't get
+            // any `InitOk`s or other messages that we don't expect. :)
+            unreachable!("unexpected message type encountered")
+        }
     }
+    Ok(())
 }

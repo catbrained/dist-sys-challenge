@@ -1,14 +1,22 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures::SinkExt;
 use serde::{Deserialize, Serialize};
-use tokio::io;
+use tokio::{
+    io,
+    sync::{
+        oneshot::{self, Sender},
+        Mutex,
+    },
+    task::{self, JoinHandle},
+    time::{self, Instant, MissedTickBehavior},
+};
 use tokio_util::codec::{FramedWrite, LinesCodec};
 
 // TODO: maybe we should implement some convenience functions,
 // like, e.g., `reply` to handle swapping src and dst etc.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
     pub src: String,
     #[serde(rename = "dest")]
@@ -16,7 +24,7 @@ pub struct Message {
     pub body: MessageBody,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MessageBody {
     #[serde(rename = "msg_id")]
     pub id: Option<u64>,
@@ -25,7 +33,7 @@ pub struct MessageBody {
     pub inner: InnerMessageBody,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum ReadOkVariants {
     Array { messages: Vec<u64> },
@@ -35,7 +43,7 @@ pub enum ReadOkVariants {
 
 /// The part of the message that is specific to each
 /// type of message.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum InnerMessageBody {
@@ -137,9 +145,39 @@ pub enum InnerMessageBody {
 
 impl Message {
     /// Serialize and send the message in a newline delimited way, as the Maelstrom protocol expects.
-    pub async fn send(&self, output: &mut FramedWrite<io::Stdout, LinesCodec>) -> Result<()> {
+    pub async fn send(&self, output: Rc<Mutex<FramedWrite<io::Stdout, LinesCodec>>>) -> Result<()> {
         let msg = serde_json::to_string(self)?;
-        output.send(msg).await?;
+        output.lock().await.send(msg).await?;
         Ok(())
+    }
+
+    /// Send a message and retry until it is acknowledged by the receiver.
+    pub async fn send_with_retry(
+        self,
+        callbacks: &Mutex<HashMap<u64, Sender<Message>>>,
+        output: Rc<Mutex<FramedWrite<io::Stdout, LinesCodec>>>,
+    ) -> Result<JoinHandle<Result<Self>>> {
+        let (tx, mut rx) = oneshot::channel();
+        callbacks.lock().await.insert(self.body.id.unwrap(), tx);
+        let task = async move {
+            self.send(output.clone()).await?;
+            let start = Instant::now() + Duration::from_millis(1000);
+            let mut interval = time::interval_at(start, Duration::from_millis(1000));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    biased;
+                    m = &mut rx => {
+                        debug_assert!(m.is_ok());
+                        return m.map_err(|e| anyhow!(e));
+                    }
+                    _ = interval.tick() => {
+                        self.send(output.clone()).await?;
+                    }
+                };
+            }
+        };
+        let jh = task::spawn_local(task);
+        Ok(jh)
     }
 }
